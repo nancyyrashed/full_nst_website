@@ -675,9 +675,6 @@ def adain_app():
         else:
             st.warning("Please upload both content and style images.")
 
-    if st.button("Back to Main Page", key="adain_back"):
-        st.session_state.page = 'main'
-
 def stylize_adain(content_img, style_img, model_path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     decoder = Decoder().to(device)
@@ -734,9 +731,6 @@ def dumoulin_app():
         else:
             st.warning("Please upload a content image.")
 
-    if st.button("Back to Main Page", key="dumoulin_back"):
-        st.session_state.page = 'main'
-
 def stylize_dumoulin(content_img, style_index, model_path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ImageStyleTransferNet()
@@ -782,9 +776,6 @@ def dumoulin_v2_app():
             os.remove(style_path)
         else:
             st.warning("Please upload both content and style images.")
-
-    if st.button("Back to Main Page", key="v2_back"):
-        st.session_state.page = 'main'
 
 def stylize_v2(content_path, style_path, model_path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -858,9 +849,6 @@ def dumoulin_v2_multi_app():
         else:
             st.warning("Please upload all images.")
 
-    if st.button("Back to Main Page", key="multi_back"):
-        st.session_state.page = 'main'
-
 def process_image_multi(img, image_size=(512, 512)):
     transforms = get_image_transforms(image_size=image_size)
     return transforms(img).unsqueeze(0)
@@ -927,9 +915,6 @@ def dumoulin_v2_video_app():
         else:
             st.warning("Please upload both the video and style image.")
 
-    if st.button("Back to Main Page", key="video_back"):
-        st.session_state.page = 'main'
-
 # Johnson app function
 def johnson_app():
     st.title("Johnson Neural Style Transfer")
@@ -955,9 +940,6 @@ def johnson_app():
                 st.download_button("Download Stylized Image", stylized_bytes, file_name="stylized.png", mime="image/png", key="johnson_download")
         else:
             st.warning("Please upload a content image.")
-
-    if st.button("Back to Main Page", key="johnson_back"):
-        st.session_state.page = 'main'
 
 def stylize_johnson(content_img, model_path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
