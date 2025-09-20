@@ -559,13 +559,30 @@ def apply_nst_to_video(video_path, style_image_path, output_video_path, model, d
     style_image = load_image_from_path(style_image_path, image_size=256, crop_size=240, center_crop_flag=True)
     style_image = style_image.to(device)
 
-    reader = imageio.get_reader(video_path)
-    frames = [frame for frame in reader]
-    meta = reader.get_meta_data()
-    detected_fps = meta.get('fps', 30.0)
-    if fps is None:
-        fps = detected_fps
-    reader.close()
+    extension = os.path.splitext(video_path)[1].lower()
+
+    if extension == '.mp4':
+        # Convert MP4 to GIF before processing
+        gif_path = tempfile.mktemp(suffix=".gif")
+        reader = imageio.get_reader(video_path)
+        writer = imageio.get_writer(gif_path)
+        for frame in reader:
+            writer.append_data(frame)
+        writer.close()
+        reader.close()
+        video_path = gif_path  # Now process the GIF
+        extension = '.gif'  # Update extension
+
+    if extension == '.gif':
+        reader = imageio.get_reader(video_path)
+        frames = [frame for frame in reader]
+        meta = reader.get_meta_data()
+        detected_fps = meta.get('fps', 30.0)
+        if fps is None:
+            fps = detected_fps
+        reader.close()
+    else:
+        raise ValueError("Unsupported video format after conversion.")
 
     num_frames = len(frames)
     resized_frames = [get_resized_frame(frame, target_size) for frame in frames]
@@ -635,6 +652,10 @@ def apply_nst_to_video(video_path, style_image_path, output_video_path, model, d
         out.write(frame)
 
     out.release()
+
+    # Clean up the temporary GIF if it was created
+    if extension == '.mp4':
+        os.unlink(gif_path)
 
 def get_resized_frame(frame, target_size=256):
     frame = np.array(frame)
