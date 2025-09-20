@@ -565,14 +565,14 @@ def apply_nst_to_video(video_path, style_image_path, output_video_path, model, d
     style_image = load_image_from_path(style_image_path, image_size=256, crop_size=240, center_crop_flag=True)
     style_image = style_image.to(device)
 
-    reader = imageio.get_reader(video_path)
+    reader = imageio.get_reader(video_path, 'ffmpeg')  # Force ffmpeg backend for MP4 reliability
     meta = reader.get_meta_data()
     detected_fps = meta.get('fps', 30.0)
     if fps is None:
         fps = detected_fps
 
     # Get first frame to determine output size
-    first_frame = next(reader)  # Read first frame
+    first_frame = reader.get_data(0)  # Use get_data for random access instead of next()
     resized_first = get_resized_frame(first_frame, target_size)
     frame_height, frame_width = resized_first.shape[:2]
 
@@ -591,16 +591,21 @@ def apply_nst_to_video(video_path, style_image_path, output_video_path, model, d
     prev_stylized = stylized.clone().detach()
     prev_resized = resized_first
 
-    # Get total number of frames if available, else estimate or use a large number for progress
-    num_frames = meta.get('nframes', 1000)  # Fallback if not available
+    # Get total number of frames if available
+    num_frames = meta.get('nframes', None)
     if num_frames is None:
-        num_frames = 1000  # Arbitrary large number for progress bar
+        num_frames = 1000  # Fallback estimate for progress bar
 
     i = 1  # Start from second frame
     start_time = time.time()
     avg_time_per_frame = 0
 
-    for frame in reader:
+    for index in range(1, num_frames):
+        try:
+            frame = reader.get_data(index)
+        except IndexError:
+            break  # Stop if end of video reached
+
         frame_start = time.time()
         resized_frame = get_resized_frame(frame, target_size)
         processed_frame = preprocess_frame(resized_frame).to(device)
@@ -608,7 +613,7 @@ def apply_nst_to_video(video_path, style_image_path, output_video_path, model, d
         with torch.no_grad():
             stylized = model(processed_frame, style_image)
 
-        # Optical flow if not first frame
+        # Optical flow
         prev_gray = cv2.cvtColor(prev_resized, cv2.COLOR_RGB2GRAY)
         curr_gray = cv2.cvtColor(resized_frame, cv2.COLOR_RGB2GRAY)
         flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
@@ -640,7 +645,7 @@ def apply_nst_to_video(video_path, style_image_path, output_video_path, model, d
         progress = (i + 1) / num_frames
 
         if progress_bar is not None:
-            progress_bar.progress(min(progress, 1.0))  # Cap at 1.0 if num_frames estimate is off
+            progress_bar.progress(min(progress, 1.0))
         if time_text is not None:
             time_text.text(f"Estimated time left: {time_left:.2f} seconds")
 
@@ -648,6 +653,7 @@ def apply_nst_to_video(video_path, style_image_path, output_video_path, model, d
 
     reader.close()
     out.release()
+  
 def get_resized_frame(frame, target_size=256):
     frame = np.array(frame)
     if frame.ndim == 2:
