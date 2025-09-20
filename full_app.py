@@ -1063,7 +1063,7 @@ def dumoulin_v2_video_app():
                         output_video_path=output_path,
                         model=model,
                         device=device,
-                        target_size=256,  # Reduced size for stability
+                        target_size=1024,  # Reduced size for stability
                         fps=None,
                         progress_bar=progress_bar,
                         time_text=time_text
