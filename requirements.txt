@@ -3,8 +3,7 @@ torch
 torchvision
 Pillow
 numpy
-opencv-python
-imageio
 scipy
 opencv-python-headless
+imageio
 imageio-ffmpeg
