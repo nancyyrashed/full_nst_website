@@ -55,6 +55,31 @@ def load_image_from_path(path, image_size=None, crop_size=None, center_crop_flag
     image = Image.open(path).convert("RGB")
     return transforms(image).unsqueeze(0)
 
+def convert_mp4_to_gif(mp4_path, gif_path, max_duration=30, fps=10, max_width=480):
+    """Convert MP4 to GIF with size and duration limits to prevent crashes"""
+    try:
+        import moviepy.editor as mp
+        
+        # Load the video
+        video = mp.VideoFileClip(mp4_path)
+        
+        # Limit duration to prevent memory issues
+        if video.duration > max_duration:
+            video = video.subclip(0, max_duration)
+            
+        # Resize if too large
+        if video.w > max_width:
+            video = video.resize(width=max_width)
+            
+        # Convert to GIF
+        video.write_gif(gif_path, fps=fps, opt='optimizeplus')
+        video.close()
+        
+        return True
+    except Exception as e:
+        st.error(f"Error converting MP4 to GIF: {str(e)}")
+        return False
+
 # ADAIN classes
 class VGGEncoder(nn.Module):
     def __init__(self):
@@ -555,108 +580,121 @@ class ImageTransformationNet(nn.Module):
         return torch.clamp(y, 0, 255)
 
 # Video functions (for dumoulin_v2_video-st)
-def apply_nst_to_video(video_path, style_image_path, output_video_path, model, device, target_size=256, fps=None, progress_bar=None, time_text=None):
-    style_image = load_image_from_path(style_image_path, image_size=256, crop_size=240, center_crop_flag=True)
-    style_image = style_image.to(device)
+def apply_nst_to_video_safe(video_path, style_image_path, output_video_path, model, device, target_size=256, fps=None, progress_bar=None, time_text=None):
+    """Enhanced video processing with better error handling"""
+    try:
+        style_image = load_image_from_path(style_image_path, image_size=256, crop_size=240, center_crop_flag=True)
+        style_image = style_image.to(device)
 
-    extension = os.path.splitext(video_path)[1].lower()
+        # Try to read the video with better error handling
+        try:
+            reader = imageio.get_reader(video_path)
+            frames = []
+            frame_count = 0
+            max_frames = 300  # Limit frames to prevent memory issues
+            
+            for frame in reader:
+                frames.append(frame)
+                frame_count += 1
+                if frame_count >= max_frames:
+                    st.warning(f"Video truncated to {max_frames} frames to prevent memory issues")
+                    break
+                    
+            meta = reader.get_meta_data()
+            detected_fps = meta.get('fps', 10.0)  # Default to lower FPS for stability
+            reader.close()
+            
+        except Exception as e:
+            st.error(f"Error reading video file: {str(e)}")
+            return False
 
-    if extension == '.mp4':
-        # Convert MP4 to GIF before processing
-        gif_path = tempfile.mktemp(suffix=".gif")
-        reader = imageio.get_reader(video_path)
-        writer = imageio.get_writer(gif_path)
-        for frame in reader:
-            writer.append_data(frame)
-        writer.close()
-        reader.close()
-        video_path = gif_path  # Now process the GIF
-        extension = '.gif'  # Update extension
-
-    if extension == '.gif':
-        reader = imageio.get_reader(video_path)
-        frames = [frame for frame in reader]
-        meta = reader.get_meta_data()
-        detected_fps = meta.get('fps', 30.0)
         if fps is None:
-            fps = detected_fps
-        reader.close()
-    else:
-        raise ValueError("Unsupported video format after conversion.")
+            fps = min(detected_fps, 15.0)  # Cap FPS for stability
 
-    num_frames = len(frames)
-    resized_frames = [get_resized_frame(frame, target_size) for frame in frames]
+        num_frames = len(frames)
+        if num_frames == 0:
+            st.error("No frames found in video")
+            return False
+            
+        resized_frames = [get_resized_frame(frame, target_size) for frame in frames]
+        processed_frames = [preprocess_frame(resized_frame) for resized_frame in resized_frames]
 
-    processed_frames = [preprocess_frame(resized_frame) for resized_frame in resized_frames]
+        stylized_frames = []
+        prev_stylized = None
+        prev_resized = None
 
-    stylized_frames = []
-    prev_stylized = None
-    prev_resized = None
+        start_time = time.time()
+        avg_time_per_frame = 0
 
-    start_time = time.time()
-    avg_time_per_frame = 0
+        for i, frame in enumerate(processed_frames):
+            frame_start = time.time()
+            frame = frame.to(device)
+            
+            with torch.no_grad():
+                stylized = model(frame, style_image)
+            
+            if prev_stylized is not None and prev_resized is not None:
+                try:
+                    curr_resized = resized_frames[i]
+                    prev_gray = cv2.cvtColor(prev_resized, cv2.COLOR_RGB2GRAY)
+                    curr_gray = cv2.cvtColor(curr_resized, cv2.COLOR_RGB2GRAY)
+                    flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+                    
+                    h, w = flow.shape[:2]
+                    y, x = np.mgrid[0:h, 0:w]
+                    flow_map = np.stack((x, y), axis=-1).astype(np.float32)
+                    flow_map += flow
+                    flow_map[..., 0] = 2.0 * flow_map[..., 0] / max(w - 1, 1) - 1.0
+                    flow_map[..., 1] = 2.0 * flow_map[..., 1] / max(h - 1, 1) - 1.0
+                    
+                    flow_map = torch.from_numpy(flow_map).unsqueeze(0).to(device).float()
+                    
+                    prev_stylized_warped = F.grid_sample(prev_stylized, flow_map, mode='bilinear', padding_mode='border', align_corners=False)
+                    
+                    stylized = 0.8 * stylized + 0.2 * prev_stylized_warped
+                except Exception as optical_flow_error:
+                    # Skip optical flow if it fails
+                    pass
+            
+            stylized_frames.append(stylized)
+            prev_stylized = stylized.clone().detach()
+            prev_resized = resized_frames[i]
 
-    for i, frame in enumerate(processed_frames):
-        frame_start = time.time()
-        frame = frame.to(device)
-        with torch.no_grad():
-            stylized = model(frame, style_image)
+            # Update progress
+            frame_time = time.time() - frame_start
+            avg_time_per_frame = ((avg_time_per_frame * i) + frame_time) / (i + 1)
+            remaining_frames = num_frames - (i + 1)
+            time_left = remaining_frames * avg_time_per_frame
+            progress = (i + 1) / num_frames
+
+            if progress_bar is not None:
+                progress_bar.progress(progress)
+            if time_text is not None:
+                time_text.text(f"Processing frame {i+1}/{num_frames} - Estimated time left: {time_left:.1f}s")
+
+        # Process stylized frames
+        stylized_frames_processed = [postprocess_frame(frame) for frame in stylized_frames]
+        stylized_frames_np = [convert_tensor_to_numpy(frame) for frame in stylized_frames_processed]
+
+        # Create output directory
+        os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
+
+        frame_height, frame_width = stylized_frames_np[0].shape[:2]
+
+        # Use more compatible codec
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
+
+        for frame in stylized_frames_np:
+            out.write(frame)
+
+        out.release()
+        return True
         
-        if prev_stylized is not None and prev_resized is not None:
-            curr_resized = resized_frames[i]
-            prev_gray = cv2.cvtColor(prev_resized, cv2.COLOR_RGB2GRAY)
-            curr_gray = cv2.cvtColor(curr_resized, cv2.COLOR_RGB2GRAY)
-            flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-            
-            h, w = flow.shape[:2]
-            y, x = np.mgrid[0:h, 0:w]
-            flow_map = np.stack((x, y), axis=-1).astype(np.float32)
-            flow_map += flow
-            flow_map[..., 0] = 2.0 * flow_map[..., 0] / max(w - 1, 1) - 1.0
-            flow_map[..., 1] = 2.0 * flow_map[..., 1] / max(h - 1, 1) - 1.0
-            
-            flow_map = torch.from_numpy(flow_map).unsqueeze(0).to(device).float()
-            
-            prev_stylized_warped = F.grid_sample(prev_stylized, flow_map, mode='bilinear', padding_mode='border', align_corners=False)
-            
-            stylized = 0.8 * stylized + 0.2 * prev_stylized_warped
-        
-        stylized_frames.append(stylized)
-        prev_stylized = stylized.clone().detach()
-        prev_resized = resized_frames[i]
-
-        # Update progress
-        frame_time = time.time() - frame_start
-        avg_time_per_frame = ((avg_time_per_frame * i) + frame_time) / (i + 1)
-        remaining_frames = num_frames - (i + 1)
-        time_left = remaining_frames * avg_time_per_frame
-        progress = (i + 1) / num_frames
-
-        if progress_bar is not None:
-            progress_bar.progress(progress)
-        if time_text is not None:
-            time_text.text(f"Estimated time left: {time_left:.2f} seconds")
-
-    stylized_frames_processed = [postprocess_frame(frame) for frame in stylized_frames]
-
-    stylized_frames_np = [convert_tensor_to_numpy(frame) for frame in stylized_frames_processed]
-
-    os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
-
-    frame_height, frame_width = stylized_frames_np[0].shape[:2]
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
-
-    for frame in stylized_frames_np:
-        out.write(frame)
-
-    out.release()
-
-    # Clean up the temporary GIF if it was created
-    if extension == '.mp4':
-        os.unlink(gif_path)
-
+    except Exception as e:
+        st.error(f"Error during video processing: {str(e)}")
+        return False
+      
 def get_resized_frame(frame, target_size=256):
     frame = np.array(frame)
     if frame.ndim == 2:
@@ -923,13 +961,19 @@ def process_image_multi(img, image_size=(512, 512)):
 def dumoulin_v2_video_app():
     st.title("Dumoulin V2 Video Neural Style Transfer")
     st.write("How to Stylize a Video Using Dumoulin V2:\n\nUpload Content Video: Upload the video file you want to stylize.\n\nUpload Style Image: Upload the style image you want to apply to your video.\n\nStart Stylization: Click \"Start Stylization\" to apply the style to each frame of the video.\n\nDownload: Once the video is processed, you can download the stylized version.")
+    
+    # Add warning about video processing
+    st.warning("⚠️ Video processing is resource-intensive. For best results:\n- Keep videos under 30 seconds\n- MP4 files will be converted to GIF format for processing\n- Processing may take several minutes")
+    
     content_video = st.file_uploader("Upload Content Video", type=["mp4", "gif"], key="video_content")
     style_file = st.file_uploader("Upload Style Image", type=["jpg", "jpeg", "png"], key="video_style")
 
     if st.button("Start Stylization", key="video_start"):
         if content_video is not None and style_file is not None:
             try:
-                video_suffix = os.path.splitext(content_video.name)[1]
+                video_suffix = os.path.splitext(content_video.name)[1].lower()
+                
+                # Create temporary files
                 with tempfile.NamedTemporaryFile(delete=False, suffix=video_suffix) as tmp_video:
                     tmp_video.write(content_video.read())
                     video_path = tmp_video.name
@@ -938,9 +982,33 @@ def dumoulin_v2_video_app():
                     tmp_style.write(style_file.read())
                     style_path = tmp_style.name
 
+                # Handle MP4 conversion to GIF
+                processing_video_path = video_path
+                conversion_needed = False
+                
+                if video_suffix == '.mp4':
+                    st.info("Converting MP4 to GIF for processing...")
+                    gif_path = tempfile.mktemp(suffix=".gif")
+                    
+                    # Check if moviepy is available, if not use alternative method
+                    try:
+                        conversion_success = convert_mp4_to_gif(video_path, gif_path)
+                        if conversion_success:
+                            processing_video_path = gif_path
+                            conversion_needed = True
+                            st.success("MP4 converted to GIF successfully!")
+                        else:
+                            st.error("Failed to convert MP4. Please try uploading a GIF instead.")
+                            return
+                    except ImportError:
+                        st.error("MoviePy not available. Please install it or use GIF format instead.")
+                        st.code("pip install moviepy")
+                        return
+
                 output_path = tempfile.mktemp(suffix=".mp4")
 
                 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                st.info(f"Using device: {device}")
 
                 checkpoint_path = 'model_cin_adain_12000.ckpt'
                 if not os.path.exists(checkpoint_path):
@@ -955,42 +1023,54 @@ def dumoulin_v2_video_app():
                     progress_bar = st.progress(0)
                     time_text = st.empty()
 
-                    apply_nst_to_video(
-                        video_path=video_path,
+                    success = apply_nst_to_video_safe(
+                        video_path=processing_video_path,
                         style_image_path=style_path,
                         output_video_path=output_path,
                         model=model,
                         device=device,
-                        target_size=1024,
+                        target_size=256,  # Reduced size for stability
                         fps=None,
                         progress_bar=progress_bar,
                         time_text=time_text
                     )
 
-                    st.video(output_path)
+                    if success and os.path.exists(output_path):
+                        st.success("Video stylization completed!")
+                        st.video(output_path)
 
-                    with open(output_path, "rb") as f:
-                        st.download_button(
-                            label="Download Stylized Video",
-                            data=f,
-                            file_name="stylized_video.mp4",
-                            mime="video/mp4",
-                            key="video_download"
-                        )
+                        with open(output_path, "rb") as f:
+                            st.download_button(
+                                label="Download Stylized Video",
+                                data=f,
+                                file_name="stylized_video.mp4",
+                                mime="video/mp4",
+                                key="video_download"
+                            )
+                    else:
+                        st.error("Video processing failed. Please try with a smaller video or different format.")
 
+                # Cleanup temporary files
+                try:
                     os.unlink(video_path)
                     os.unlink(style_path)
-                    os.unlink(output_path)
+                    if conversion_needed and os.path.exists(gif_path):
+                        os.unlink(gif_path)
+                    if os.path.exists(output_path):
+                        os.unlink(output_path)
+                except:
+                    pass  # Ignore cleanup errors
 
             except Exception as e:
                 st.error(f"Error during stylization: {str(e)}")
+                st.info("Try using a shorter video or GIF format for better compatibility.")
         else:
             st.warning("Please upload both the video and style image.")
 
     if st.button("Back to Main Page", key="video_back"):
         st.session_state.page = 'main'
         st.rerun()
-
+      
 # Johnson app function
 def johnson_app():
     st.title("Johnson Neural Style Transfer")
