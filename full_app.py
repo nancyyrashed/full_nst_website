@@ -566,53 +566,71 @@ def apply_nst_to_video(video_path, style_image_path, output_video_path, model, d
     style_image = style_image.to(device)
 
     reader = imageio.get_reader(video_path)
-    frames = [frame for frame in reader]
     meta = reader.get_meta_data()
     detected_fps = meta.get('fps', 30.0)
     if fps is None:
         fps = detected_fps
-    reader.close()
 
-    num_frames = len(frames)
-    resized_frames = [get_resized_frame(frame, target_size) for frame in frames]
+    # Get first frame to determine output size
+    first_frame = next(reader)  # Read first frame
+    resized_first = get_resized_frame(first_frame, target_size)
+    frame_height, frame_width = resized_first.shape[:2]
 
-    processed_frames = [preprocess_frame(resized_frame) for resized_frame in resized_frames]
+    # Open video writer with determined size
+    os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
+    fourcc = cv2.VideoWriter_fourcc(*'X264')  # Use 'X264' for better compatibility
+    out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
 
-    stylized_frames = []
-    prev_stylized = None
-    prev_resized = None
+    # Process first frame
+    processed_first = preprocess_frame(resized_first).to(device)
+    with torch.no_grad():
+        stylized = model(processed_first, style_image)
+    stylized_np = convert_tensor_to_numpy(postprocess_frame(stylized))
+    out.write(stylized_np)
 
+    prev_stylized = stylized.clone().detach()
+    prev_resized = resized_first
+
+    # Get total number of frames if available, else estimate or use a large number for progress
+    num_frames = meta.get('nframes', 1000)  # Fallback if not available
+    if num_frames is None:
+        num_frames = 1000  # Arbitrary large number for progress bar
+
+    i = 1  # Start from second frame
     start_time = time.time()
     avg_time_per_frame = 0
 
-    for i, frame in enumerate(processed_frames):
+    for frame in reader:
         frame_start = time.time()
-        frame = frame.to(device)
+        resized_frame = get_resized_frame(frame, target_size)
+        processed_frame = preprocess_frame(resized_frame).to(device)
+
         with torch.no_grad():
-            stylized = model(frame, style_image)
-        
-        if prev_stylized is not None and prev_resized is not None:
-            curr_resized = resized_frames[i]
-            prev_gray = cv2.cvtColor(prev_resized, cv2.COLOR_RGB2GRAY)
-            curr_gray = cv2.cvtColor(curr_resized, cv2.COLOR_RGB2GRAY)
-            flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-            
-            h, w = flow.shape[:2]
-            y, x = np.mgrid[0:h, 0:w]
-            flow_map = np.stack((x, y), axis=-1).astype(np.float32)
-            flow_map += flow
-            flow_map[..., 0] = 2.0 * flow_map[..., 0] / max(w - 1, 1) - 1.0
-            flow_map[..., 1] = 2.0 * flow_map[..., 1] / max(h - 1, 1) - 1.0
-            
-            flow_map = torch.from_numpy(flow_map).unsqueeze(0).to(device).float()
-            
-            prev_stylized_warped = F.grid_sample(prev_stylized, flow_map, mode='bilinear', padding_mode='border', align_corners=False)
-            
-            stylized = 0.8 * stylized + 0.2 * prev_stylized_warped
-        
-        stylized_frames.append(stylized)
+            stylized = model(processed_frame, style_image)
+
+        # Optical flow if not first frame
+        prev_gray = cv2.cvtColor(prev_resized, cv2.COLOR_RGB2GRAY)
+        curr_gray = cv2.cvtColor(resized_frame, cv2.COLOR_RGB2GRAY)
+        flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+
+        h, w = flow.shape[:2]
+        y, x = np.mgrid[0:h, 0:w]
+        flow_map = np.stack((x, y), axis=-1).astype(np.float32)
+        flow_map += flow
+        flow_map[..., 0] = 2.0 * flow_map[..., 0] / max(w - 1, 1) - 1.0
+        flow_map[..., 1] = 2.0 * flow_map[..., 1] / max(h - 1, 1) - 1.0
+
+        flow_map = torch.from_numpy(flow_map).unsqueeze(0).to(device).float()
+
+        prev_stylized_warped = F.grid_sample(prev_stylized, flow_map, mode='bilinear', padding_mode='border', align_corners=False)
+
+        stylized = 0.8 * stylized + 0.2 * prev_stylized_warped
+
+        stylized_np = convert_tensor_to_numpy(postprocess_frame(stylized))
+        out.write(stylized_np)
+
         prev_stylized = stylized.clone().detach()
-        prev_resized = resized_frames[i]
+        prev_resized = resized_frame
 
         # Update progress
         frame_time = time.time() - frame_start
@@ -622,26 +640,14 @@ def apply_nst_to_video(video_path, style_image_path, output_video_path, model, d
         progress = (i + 1) / num_frames
 
         if progress_bar is not None:
-            progress_bar.progress(progress)
+            progress_bar.progress(min(progress, 1.0))  # Cap at 1.0 if num_frames estimate is off
         if time_text is not None:
             time_text.text(f"Estimated time left: {time_left:.2f} seconds")
 
-    stylized_frames_processed = [postprocess_frame(frame) for frame in stylized_frames]
+        i += 1
 
-    stylized_frames_np = [convert_tensor_to_numpy(frame) for frame in stylized_frames_processed]
-
-    os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
-
-    frame_height, frame_width = stylized_frames_np[0].shape[:2]
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
-
-    for frame in stylized_frames_np:
-        out.write(frame)
-
+    reader.close()
     out.release()
-
 def get_resized_frame(frame, target_size=256):
     frame = np.array(frame)
     if frame.ndim == 2:
