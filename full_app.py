@@ -55,27 +55,68 @@ def load_image_from_path(path, image_size=None, crop_size=None, center_crop_flag
     image = Image.open(path).convert("RGB")
     return transforms(image).unsqueeze(0)
 
-def convert_mp4_to_gif(mp4_path, gif_path, max_duration=30, fps=10, max_width=480):
-    """Convert MP4 to GIF with size and duration limits to prevent crashes"""
+def convert_mp4_to_gif(mp4_path, gif_path, max_frames=150, target_fps=8):
+    """Convert MP4 to GIF using opencv and imageio - no moviepy required"""
     try:
-        import moviepy.editor as mp
+        # Open video with opencv
+        cap = cv2.VideoCapture(mp4_path)
         
-        # Load the video
-        video = mp.VideoFileClip(mp4_path)
+        if not cap.isOpened():
+            st.error("Could not open video file")
+            return False
         
-        # Limit duration to prevent memory issues
-        if video.duration > max_duration:
-            video = video.subclip(0, max_duration)
+        # Get video properties
+        original_fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Calculate frame skip to achieve target fps and limit frames
+        frame_skip = max(1, int(original_fps / target_fps))
+        max_frames_to_read = min(max_frames * frame_skip, total_frames)
+        
+        frames = []
+        frame_count = 0
+        frames_read = 0
+        
+        st.info(f"Converting MP4 to GIF... Reading {max_frames_to_read} frames")
+        
+        while cap.isOpened() and frames_read < max_frames_to_read:
+            ret, frame = cap.read()
+            if not ret:
+                break
+                
+            # Only keep every nth frame to reduce size and achieve target fps
+            if frame_count % frame_skip == 0:
+                # Convert BGR to RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Resize frame to reduce file size (max width 400px)
+                height, width = frame_rgb.shape[:2]
+                if width > 400:
+                    new_width = 400
+                    new_height = int(height * (new_width / width))
+                    frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
+                
+                frames.append(frame_rgb)
+                
+                if len(frames) >= max_frames:
+                    break
             
-        # Resize if too large
-        if video.w > max_width:
-            video = video.resize(width=max_width)
-            
-        # Convert to GIF
-        video.write_gif(gif_path, fps=fps, opt='optimizeplus')
-        video.close()
+            frame_count += 1
+            frames_read += 1
         
+        cap.release()
+        
+        if len(frames) == 0:
+            st.error("No frames extracted from video")
+            return False
+        
+        # Save as GIF using imageio
+        st.info(f"Saving GIF with {len(frames)} frames...")
+        imageio.mimsave(gif_path, frames, fps=target_fps, loop=0)
+        
+        st.success(f"Successfully converted MP4 to GIF ({len(frames)} frames)")
         return True
+        
     except Exception as e:
         st.error(f"Error converting MP4 to GIF: {str(e)}")
         return False
@@ -990,19 +1031,12 @@ def dumoulin_v2_video_app():
                     st.info("Converting MP4 to GIF for processing...")
                     gif_path = tempfile.mktemp(suffix=".gif")
                     
-                    # Check if moviepy is available, if not use alternative method
-                    try:
-                        conversion_success = convert_mp4_to_gif(video_path, gif_path)
-                        if conversion_success:
-                            processing_video_path = gif_path
-                            conversion_needed = True
-                            st.success("MP4 converted to GIF successfully!")
-                        else:
-                            st.error("Failed to convert MP4. Please try uploading a GIF instead.")
-                            return
-                    except ImportError:
-                        st.error("MoviePy not available. Please install it or use GIF format instead.")
-                        st.code("pip install moviepy")
+                    conversion_success = convert_mp4_to_gif(video_path, gif_path)
+                    if conversion_success:
+                        processing_video_path = gif_path
+                        conversion_needed = True
+                    else:
+                        st.error("Failed to convert MP4. Please try uploading a GIF instead.")
                         return
 
                 output_path = tempfile.mktemp(suffix=".mp4")
