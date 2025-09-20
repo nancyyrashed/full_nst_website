@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore")
 nst_explanation = """
 Neural Style Transfer (NST) combines the content of one image with the style of another, creating a new image that retains the original structure but adopts the artistic style. This is done using deep neural networks to minimize the differences in content and style between the input and generated images.
 
-Go a head and choose the model from the dropdown menu and click Go button to start
+Go a head and choose the model from the dropdown menu and click Go button to start, and there are example images in the left sidebar menu
 """
 
 # Define constants for all apps
