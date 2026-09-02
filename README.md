@@ -1,111 +1,88 @@
 # Neural Style Transfer Web Application
 
-## Overview
+A **Streamlit** web app that lets users apply several different Neural Style Transfer (NST) techniques to their own images and videos through an interactive interface — upload a content image (and, depending on the method, a style image), pick a model, and download the stylized result. This is the deployed web app from my final-year Computer Science project at Goldsmiths, University of London.
 
-This repository contains the implementation of a web-based Neural Style Transfer (NST) application developed as part of my final-year Computer Science dissertation at Goldsmiths, University of London.
+**Live Demo:** https://neural-style-transfer-graduation-25.streamlit.app/
 
-The application allows users to upload content and style images, apply various Neural Style Transfer techniques, and generate stylized outputs through an interactive web interface. The platform integrates multiple state-of-the-art NST models and provides a user-friendly environment for experimenting with artistic image transformation.
+## Supported Methods
 
----
+The app's method picker offers:
 
-## Features
+| Method | What you upload | How it works |
+|---|---|---|
+| **ADAIN** | Content image + style image | Adaptive Instance Normalization — applies any style image at inference time, no retraining needed. |
+| **Dumoulin** | Content image + a style index (0–39) | Conditional Instance Normalization (CIN) — picks from 40 pre-learned styles via a style code, shown as a reference grid (`style_index.png`). |
+| **Dumoulin V2** | Content image + style image | An extension combining CIN and AdaIN, so it can generalize to *unseen* style images rather than only the 40 baked-in styles. |
+| **Dumoulin V2 Multi-Style** | Content image + two style images | Applies one style to the left half of the image and a second style to the right half, using the Dumoulin V2 model. |
+| **Dumoulin V2 Video** | Content video (MP4/GIF) + style image | Applies the Dumoulin V2 model frame-by-frame to a video. MP4s are automatically converted to GIF for processing. |
+| **Johnson** | Content image + a choice of 3 fixed styles | A feed-forward network, trained separately for each of 3 styles ("Starry Night", "Scream", "The River Seine at Chatou"). |
 
-* Upload content and style images
-* Generate stylized images using multiple NST models
-* Compare outputs across different architectures
-* Support for arbitrary style transfer
-* Multi-style image generation
-* Video style transfer functionality
-* Real-time interaction through a web interface
-* Download generated outputs
+> **Note:** Gatys et al.'s optimization-based method is **not** included in this deployed app (it's too slow for interactive use) — it exists only as a notebook in the companion research repo, [`graduation-project-final`](https://github.com/nancyyrashed/graduation-project-final).
 
----
+## Contents
 
-## Supported Models
+| File / Folder | Description |
+|---|---|
+| `full_app.py` | The entire Streamlit app: page routing, per-model UI, and inference functions. |
+| `requirements.txt` | Python dependencies. |
+| `packages.txt` | System packages needed at deploy time (`ffmpeg`, `libgl1-mesa-glx`). |
+| `.devcontainer/` | Dev Container config for one-click setup in GitHub Codespaces. |
+| `*.pth` / `*.ckpt` | Pretrained model weights bundled with the app (AdaIN decoder, Johnson per-style networks, Dumoulin/Dumoulin V2 checkpoints). |
+| `style_index.png` | Reference sheet showing which artwork corresponds to each Dumoulin style index (0–39). |
+| `nst-example.png`, `content.jpg`, `c1.jpg`, `000000000008.jpg`, `style1.jpg`, `style2.jpg`, `wave.jpg`, `video2.gif` | Example images/GIF shown in the app's landing page and sidebar. |
 
-### Gatys et al. (2016)
+## How It Works
 
-Optimization-based Neural Style Transfer using VGG-19 feature extraction and iterative optimization.
+- **`full_app.py`** uses `st.session_state.page` as a simple router: a main menu lets the user pick a method, and each method has its own page function (`adain_app`, `dumoulin_app`, `dumoulin_v2_app`, `dumoulin_v2_multi_app`, `dumoulin_v2_video_app`, `johnson_app`).
+- Each page function handles file upload, calls a corresponding `stylize_*()` function that loads the relevant PyTorch model/checkpoint and runs inference, then displays the result with a **Download** button.
+- Shared preprocessing (`get_image_transforms`, `load_image_from_path`) and ImageNet normalization/denormalization utilities are defined once at the top of the file and reused across models.
+- Video stylization (`dumoulin_v2_video_app`) converts MP4 input to GIF via OpenCV + ImageIO when needed, applies the model frame-by-frame, and reassembles the result.
+- A sidebar ("Example Images") shows sample content/style images and a sample stylized video/GIF for reference.
 
-### Johnson et al. (2016)
+## Requirements
 
-Feed-forward style transfer network designed for faster image stylization.
+```bash
+pip install -r requirements.txt
+```
 
-### AdaIN (Adaptive Instance Normalization)
+`requirements.txt` includes: `streamlit`, `torch`, `torchvision`, `Pillow`, `numpy`, `scipy`, `opencv-python-headless`, `imageio`, `imageio-ffmpeg`, `moviepy`.
 
-Arbitrary style transfer capable of applying previously unseen artistic styles without retraining.
+On Linux/deployment environments, also install the system packages in `packages.txt`:
 
-### Dumoulin et al. (2017)
+```
+libgl1-mesa-glx
+ffmpeg
+```
 
-Conditional Instance Normalization model supporting multiple artistic styles.
+## Usage
 
-### Dumoulin V2
+### Run locally
 
-Custom extension combining Conditional Instance Normalization and Adaptive Instance Normalization to improve flexibility and style generalization.
+```bash
+pip install -r requirements.txt
+streamlit run full_app.py
+```
 
-### Dumoulin V2 Multi-Style
+Then open the local URL Streamlit prints (usually `http://localhost:8501`).
 
-Supports simultaneous application of multiple artistic styles within a single image.
+### Run in GitHub Codespaces
 
-### Dumoulin V2 Video Transfer
+The included `.devcontainer/devcontainer.json` installs `requirements.txt`/`packages.txt` and launches `streamlit run full_app.py` automatically when the Codespace attaches, forwarding port `8501`.
 
-Video style transfer implementation using optical flow to maintain temporal consistency between frames.
+### Using the app
 
----
+1. From the main page, choose an NST method from the dropdown and click **Go**.
+2. Upload the required image(s) (and/or a video, for the video method).
+3. Click **Start Stylization** and wait for processing (video stylization can take several minutes and works best under 30 seconds of footage).
+4. Click **Download Stylized Image/Video** to save the result.
+5. Use **Back to Main Page** to try a different method.
 
 ## Technologies Used
 
-### Frontend
+**Frontend:** Streamlit
 
-* Streamlit
+**Backend / ML:** Python, PyTorch, TensorFlow, Keras
 
-### Backend & Machine Learning
+**Computer Vision / Media:** OpenCV, Pillow, ImageIO, FFmpeg
 
-* Python
-* PyTorch
-* TensorFlow
-* Keras
-
-### Computer Vision & Media Processing
-
-* OpenCV
-* Pillow (PIL)
-* ImageIO
-* FFmpeg
-
-### Data Processing & Visualization
-
-* NumPy
-* Matplotlib
-* Seaborn
-
----
-
-## Application Workflow
-
-1. Select a Neural Style Transfer model.
-2. Upload a style image.
-3. Upload a content image.
-4. Generate the stylized output.
-5. Download generated images or videos.
-
----
-
-## Use Cases
-
-* Digital Art Generation
-* Artistic Photo Transformation
-* Style Exploration and Experimentation
-* Educational Demonstration of Neural Style Transfer
-* Research and Model Comparison
-
----
-
-## Project Background
-
-This web application was developed alongside a broader research project investigating Neural Style Transfer architectures and their effectiveness for image and video stylization.
-
-The system integrates multiple NST approaches within a single interface, enabling users to compare different models and explore the trade-offs between style fidelity, content preservation, flexibility, and computational efficiency.
-
-## Live Demo:
-https://neural-style-transfer-graduation-25.streamlit.app/
+**Data Processing:** NumPy, Matplotlib, Seaborn
